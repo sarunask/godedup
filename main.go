@@ -70,16 +70,13 @@ func compare(out chan File, quit chan struct{}) {
 func walker(filesList chan string, searchPath string, minSizeKb int64) {
 	err := filepath.Walk(searchPath, func(path string, f os.FileInfo, err error) error {
 		//Only append files which are not dirs and we don't need 2 skip that file
-		checkMinSize := minSizeKb != 0
-		if f != nil && f.IsDir() == false && f.Mode().IsRegular() == true {
-			if checkMinSize {
-				if f.Size() >= (minSizeKb*1024) {
-					filesList <- path
-				}
-			} else {
-				filesList <- path
-			}
+		if f == nil || f.IsDir() || ! f.Mode().IsRegular() {
+			return nil
 		}
+		if minSizeKb != 0 && f.Size() < (minSizeKb*1024) {
+			return nil
+		}
+		filesList <- path
 		return nil
 	})
 	if err != nil {
