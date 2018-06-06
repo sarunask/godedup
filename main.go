@@ -64,7 +64,7 @@ func compare(out chan File, quit chan struct{}) {
 			hashMap[file.Sha1] = file.FileName
 		}
 	}
-	quit <- struct{}{}
+	close(quit)
 }
 
 func walker(filesList chan string, searchPath string, minSizeKb int64) {
