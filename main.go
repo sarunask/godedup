@@ -17,11 +17,11 @@ type File = struct {
 	Sha1 string
 }
 
-func makeSha1Sum(fileList *[]string) <-chan File {
+func makeSha1Sum(fileList chan string, out chan File) {
 	var wg sync.WaitGroup
-	out := make(chan File, len(*fileList))
 
 	sha1sum := func(path string) {
+		//log.Printf("Reading file %v\n", path)
 		f, err := os.Open(path)
 		defer wg.Done()
 		if err != nil {
@@ -41,30 +41,60 @@ func makeSha1Sum(fileList *[]string) <-chan File {
 		out <- file
 	}
 	i := 20
-	for _, file := range *fileList {
+	for file := range fileList {
 		wg.Add(1)
 		go sha1sum(file)
 		i--
 		if i == 0 {
+			// We use 20 threads to read files and make sha1sum
 			i = 20
 			wg.Wait()
 		}
 	}
-	// Start a goroutine to close out once all the output goroutines are
-	// done.  This must start after the wg.Add call.
-	go func() {
-		wg.Wait()
-		close(out)
-	}()
-	return out
+	close(out)
+}
+
+func compare(out chan File, quit chan struct{}) {
+	hashMap := make(map[string]string,100)
+	for file := range out {
+		if _, ok := hashMap[file.Sha1]; ok {
+			log.Printf("Duplicate found at %s of %s, sha1sum %s\n",
+				hashMap[file.Sha1], file.FileName, file.Sha1)
+		} else {
+			hashMap[file.Sha1] = file.FileName
+		}
+	}
+	quit <- struct{}{}
+}
+
+func walker(filesList chan string, searchPath string, minSizeKb int64) {
+	err := filepath.Walk(searchPath, func(path string, f os.FileInfo, err error) error {
+		//Only append files which are not dirs and we don't need 2 skip that file
+		checkMinSize := minSizeKb != 0
+		if f != nil && f.IsDir() == false && f.Mode().IsRegular() == true {
+			if checkMinSize {
+				if f.Size() >= (minSizeKb*1024) {
+					filesList <- path
+				}
+			} else {
+				filesList <- path
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("error: %v\n", err)
+	}
+	close(filesList)
 }
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	//Taken from https://gobyexample.com/command-line-flags
-	//1. Do this for the entire set of OBI mails until now?
 	var searchPath string
 	flag.StringVar(&searchPath, "search_path", "./", "Directory, where we are going to search for our e-mails")
+	var minSizeKb uint64
+	flag.Uint64Var(&minSizeKb, "min_size_kb", 0, "Minimum value for file to be added to comparision (in KB)")
 
 	flag.Parse()
 
@@ -73,25 +103,11 @@ func main() {
 		os.Exit(-1)
 	}
 
-	filesList := make([]string, 0)
-	//go testEmail(fileList)
-	err := filepath.Walk(searchPath, func(path string, f os.FileInfo, err error) error {
-		//Only append files which are not dirs and we don't need 2 skip that file
-		if f != nil && f.IsDir() == false && f.Mode().IsRegular() == true {
-			filesList = append(filesList, path)
-		}
-		return nil
-	})
-	if err != nil {
-		log.Printf("error: %v\n", err)
-	}
-	hashMap := make(map[string]string,100)
-	for file := range makeSha1Sum(&filesList) {
-		if _, ok := hashMap[file.Sha1]; ok {
-			log.Printf("Duplicate found at %s of %s, sha1sum %s\n",
-				hashMap[file.Sha1], file.FileName, file.Sha1)
-		} else {
-			hashMap[file.Sha1] = file.FileName
-		}
-	}
+	filesList := make(chan string)
+	out := make(chan File)
+	quit := make(chan struct{})
+	go walker(filesList, searchPath, int64(minSizeKb))
+	go makeSha1Sum(filesList, out)
+	go compare(out, quit)
+	<-quit
 }
